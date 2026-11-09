@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "imn119-tp2"
+version = "2.1.2"
+description = "Outils de visualisation et de remise pour le TP2 du cours IMN119"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "matplotlib",
+    "ipywidgets>=7.7,<9",
+    "Pillow>=9",
+    "scikit-image>=0.22",
+    "ipython>=7.34",
+]
+
+[tool.setuptools]
+packages = ["imn119_tp2"]
