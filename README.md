@@ -18,9 +18,19 @@ Le paquet `imn119-tp2` fournit les interfaces RVB, CIELAB et HSV, les essais et 
 
 Les consignes, les crédits des images et la procédure de remise figurent dans le notebook.
 
-## Outils, version 2.1.4
+## Outils, version 2.2.0
 
-Les trois éditeurs proposent un bouton **Réinitialiser**, qui rétablit leurs réglages neutres sans changer l’image. Les figures sont fermées après affichage pour éviter leur accumulation pendant les essais.
+L’éditeur RVB utilise directement la fonction fournie dans le notebook :
+
+```python
+interface_rvb = outils.creer_editeur(images, "RVB", conversion=appliquer_rgb)
+```
+
+Le paramètre `conversion` est nécessaire pour les trois espaces : `appliquer_rgb` pour RVB, `rgb_to_lab` pour CIELAB et `rgb_to_hsv` pour HSV. Le module ne contient plus de seconde implémentation du réglage RVB. L’affichage sans widgets reçoit la même fonction avec `conversion=appliquer_rgb`.
+
+La question 1 suit la démarche « prédire, tester, expliquer » : ses réponses sont des phrases organisées dans `q01`. L’export les conserve dans `reponses.json` et utilise le schéma `tp2-couleurs-2.2`. Les calculs numériques des réglages restent à la question 7. Le barème total reste de 100 points, dont 10 pour Q1.
+
+Un **curseur de réglage** est une commande que l’on fait glisser pour changer une valeur. Les trois éditeurs proposent un bouton **Réinitialiser**, qui rétablit leurs réglages neutres sans changer l’image. Les figures sont fermées après affichage pour éviter leur accumulation pendant les essais.
 
 Les images d’essai sont conservées dans `.cache-tp2` et réutilisées sans réseau après un premier chargement réussi. Un cache endommagé est téléchargé à nouveau. Les images personnelles transparentes sont composées sur fond blanc, en respectant leur orientation EXIF.
 

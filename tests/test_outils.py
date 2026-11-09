@@ -19,6 +19,15 @@ from imn119_tp2 import outils
 
 
 class OutilsTests(unittest.TestCase):
+    @staticmethod
+    def fonction_rvb_du_notebook():
+        notebook = json.loads((Path(__file__).resolve().parents[1] / 'TP2.ipynb').read_text(encoding='utf-8'))
+        cellule = next(c for c in notebook['cells']
+                       if c.get('id', c['metadata'].get('id')) == 'code-rvb-fourni')
+        espace = {'np': np}
+        exec(''.join(cellule['source']), espace)
+        return espace['appliquer_rgb']
+
     def setUp(self):
         self.temporaire = tempfile.TemporaryDirectory()
         self.dossier = Path(self.temporaire.name)
@@ -75,7 +84,8 @@ class OutilsTests(unittest.TestCase):
         for espace, neutres in [('RVB', (1., 1., 1.)), ('CIELAB', (0., 0., 0.)), ('HSV', (0., 1., 1.))]:
             with self.subTest(espace=espace), patch.object(outils, 'afficher_comparaison') as afficher, \
                     patch.object(outils, 'display'):
-                editeur = outils.creer_editeur({'essai': np.zeros((2, 2, 3))}, espace)
+                fonction = self.fonction_rvb_du_notebook() if espace == 'RVB' else lambda t: t
+                editeur = outils.creer_editeur({'essai': np.zeros((2, 2, 3))}, espace, conversion=fonction)
                 for curseur in editeur['curseurs']:
                     curseur.value = curseur.max
                 avant = afficher.call_count
@@ -92,8 +102,48 @@ class OutilsTests(unittest.TestCase):
         avant = plt.get_fignums()
         with patch.object(plt, 'show'):
             for _ in range(3):
-                outils.afficher_comparaison({'Roue chromatique': np.zeros((2, 2, 3))}, 'RVB')
+                outils.afficher_comparaison({'Roue chromatique': np.zeros((2, 2, 3))}, 'RVB',
+                                           conversion=self.fonction_rvb_du_notebook())
         self.assertEqual(plt.get_fignums(), avant)
+
+    def test_editeur_utilise_le_resultat_de_la_fonction_transmise(self):
+        image = np.zeros((2, 2, 3))
+        appels = []
+        affichages = []
+
+        def fonction_personnalisee(tableau, rouge, vert, bleu):
+            appels.append((rouge, vert, bleu))
+            tableau[:] = rouge / 4
+            return tableau
+
+        def observer_figure():
+            affichages.append(np.asarray(plt.gcf().axes[1].images[0].get_array()).copy())
+
+        with patch.object(outils, 'display'), patch.object(plt, 'show', side_effect=observer_figure):
+            editeur = outils.creer_editeur({'essai': image}, 'RVB', conversion=fonction_personnalisee)
+            editeur['curseurs'][0].value = 2
+            editeur['reinitialiser'].click()
+        self.assertEqual(appels, [(1., 1., 1.), (2., 1., 1.), (1., 1., 1.)])
+        for affichage, valeur in zip(affichages, [0.25, 0.5, 0.25]):
+            np.testing.assert_array_equal(affichage, np.full_like(image, valeur))
+        np.testing.assert_array_equal(image, np.zeros_like(image))
+
+    def test_rvb_fourni_applique_canaux_et_ecretage(self):
+        image = np.array([[[0.8, 0.4, 0.2]]])
+        original = image.copy()
+        resultat, canaux = outils.traiter_image(image, 'RVB', (2., 0.5, 1.),
+                                               conversion=self.fonction_rvb_du_notebook())
+        np.testing.assert_allclose(resultat, [[[1., 0.2, 0.2]]])
+        np.testing.assert_array_equal(image, original)
+        np.testing.assert_array_equal(canaux[0][..., 1:], 0)
+
+    def test_fonction_rvb_absente_ou_hors_domaine_signalee(self):
+        image = np.zeros((2, 2, 3))
+        with self.assertRaisesRegex(ValueError, 'fonction du notebook'):
+            outils.creer_editeur({'essai': image}, 'RVB')
+        with self.assertRaisesRegex(ValueError, 'np.clip'):
+            outils.traiter_image(image, 'RVB', (1, 1, 1),
+                                conversion=lambda t, **k: np.full_like(t, 2.))
 
     def historique(self):
         sources = [f'# REPONSE_Q{i:02d}\nvaleur = None' for i in range(1, 8)]
@@ -105,10 +155,15 @@ class OutilsTests(unittest.TestCase):
         try:
             os.chdir(self.dossier)
             with patch.object(outils, 'get_ipython', return_value=self.historique()):
-                archive = outils.creer_remise('Essai', 'test00', {'q01': {'neutre': None}})
+                archive = outils.creer_remise('Essai', 'test00', {
+                    'q01': {'sans_rouge': {'prediction': 'Un essai rédigé.', 'observation': None, 'explication': None}}
+                })
             with zipfile.ZipFile(archive) as z:
                 donnees = json.loads(z.read('reponses.json'))
-                self.assertIsNone(donnees['reponses']['q01']['neutre'])
+                self.assertEqual(donnees['schema_version'], 'tp2-couleurs-2.2')
+                essai = donnees['reponses']['q01']['sans_rouge']
+                self.assertEqual(essai['prediction'], 'Un essai rédigé.')
+                self.assertIsNone(essai['observation'])
                 reponses = z.read('reponses.py').decode('utf-8')
                 self.assertIn('dernière version', reponses)
                 self.assertEqual(reponses.count('# REPONSE_Q01'), 1)

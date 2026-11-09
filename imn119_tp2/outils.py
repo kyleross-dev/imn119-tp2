@@ -21,7 +21,7 @@ from PIL import Image, ImageOps
 from skimage.color import hsv2rgb, lab2rgb
 
 
-VERSION_TP = "tp2-couleurs-2.1"
+VERSION_TP = "tp2-couleurs-2.2"
 BAREME = {'q01': 10, 'q02': 30, 'q03': 30, 'q04': 5, 'q05': 5, 'q06': 5, 'q07': 15}
 
 
@@ -134,14 +134,6 @@ def importer_images(images, chemins=None):
         _ajouter_images(images, files.upload().items())
 
 
-def appliquer_rgb(tableau, rouge=1.0, vert=1.0, bleu=1.0):
-    """Multiplie les canaux RVB, puis borne le résultat entre 0 et 1."""
-    resultat = np.array(tableau, dtype=float, copy=True)
-    resultat[..., 0] *= rouge
-    resultat[..., 1] *= vert
-    resultat[..., 2] *= bleu
-    return np.clip(resultat, 0, 1)
-
 def verifier_tableau(resultat, original):
     assert isinstance(resultat, np.ndarray), "Renvoyez un tableau NumPy."
     assert resultat.shape == original.shape, "La forme doit rester (hauteur, largeur, 3)."
@@ -149,17 +141,20 @@ def verifier_tableau(resultat, original):
     assert np.isfinite(resultat).all(), "Le résultat contient NaN ou une valeur infinie."
 
 def traiter_image(tableau, espace, reglages, conversion=None):
-    """Convertit, ajuste les canaux et utilise la conversion inverse fournie."""
+    """Applique la fonction fournie par le notebook, puis prépare l’affichage."""
     p, q, r = reglages
+    if not callable(conversion):
+        raise ValueError("Passez la fonction du notebook avec conversion=appliquer_rgb, rgb_to_lab ou rgb_to_hsv.")
     if espace == "RVB":
-        resultat = appliquer_rgb(tableau, p, q, r)
+        resultat = conversion(tableau.copy(), rouge=p, vert=q, bleu=r)
+        verifier_tableau(resultat, tableau)
+        if not np.all((resultat >= 0) & (resultat <= 1)):
+            raise ValueError("La fonction appliquer_rgb doit borner le résultat dans [0, 1] avec np.clip.")
         canaux = [np.zeros_like(resultat) for _ in range(3)]
         for i in range(3):
             canaux[i][..., i] = resultat[..., i]
         return resultat, canaux
 
-    if conversion is None:
-        raise ValueError("Passez votre fonction de conversion à l’éditeur.")
     if espace == "CIELAB":
         canaux = np.array(conversion(tableau.copy()), copy=True)
         verifier_tableau(canaux, tableau)
@@ -210,11 +205,13 @@ def afficher_comparaison(images, espace, image="Roue chromatique", reglages=None
 def creer_editeur(images, espace, conversion=None):
     """Crée l’interface avec les widgets standards d’ipywidgets.
 
-    conversion : la fonction de l’étudiant, requise pour CIELAB et HSV.
+    conversion : appliquer_rgb, rgb_to_lab ou rgb_to_hsv, définie dans le notebook.
     Relancez l’appel après avoir redéfini cette fonction dans le notebook.
     """
     if not images:
         raise ValueError("Chargez ou importez au moins une image avant de lancer l’éditeur.")
+    if not callable(conversion):
+        raise ValueError("Passez la fonction du notebook avec le paramètre conversion.")
     specifications = {
         "RVB": [("Rouge ×", 0, 2, .01, 1), ("Vert ×", 0, 2, .01, 1), ("Bleu ×", 0, 2, .01, 1)],
         "CIELAB": [("L* +", -50, 50, 1, 0), ("a* +", -50, 50, 1, 0), ("b* +", -50, 50, 1, 0)],
