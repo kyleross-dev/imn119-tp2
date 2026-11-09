@@ -25,7 +25,10 @@ BAREME = {'q01': 10, 'q02': 30, 'q03': 30, 'q04': 5, 'q05': 5, 'q06': 5, 'q07': 
 
 
 def preparer():
-    """Configure l’affichage du notebook et active les widgets dans Colab."""
+    """Configure les figures dans Jupyter, VS Code, PyCharm et Colab."""
+    shell = get_ipython()
+    if shell is not None:
+        shell.run_line_magic("matplotlib", "inline")
     try:
         from google.colab import output
         output.enable_custom_widget_manager()
@@ -55,22 +58,53 @@ def charger_images():
         print(f"Image chargée : {titre}")
     return images
 
-def importer_images(images):
-    """Ajoute les images personnelles sélectionnées dans Colab au dictionnaire fourni."""
-    try:
-        from google.colab import files
-    except ImportError:
-        print("L’import interactif est prévu pour Google Colab.")
-        return
-    for fichier, contenu in files.upload().items():
+def _ajouter_images(images, fichiers):
+    """Charge des couples (nom, octets), communs aux différents environnements."""
+    for fichier, contenu in fichiers:
         try:
-            with Image.open(io.BytesIO(contenu)) as im:
+            with Image.open(io.BytesIO(bytes(contenu))) as im:
                 im = ImageOps.exif_transpose(im).convert("RGB")
                 im.thumbnail((1000, 1000))
                 images["Personnelle : " + fichier] = np.asarray(im, dtype=float) / 255.0
             print("Image ajoutée :", fichier)
         except (OSError, ValueError):
             print("Image non reconnue :", fichier)
+
+
+def importer_images(images, chemins=None):
+    """Ajoute des images par chemins locaux ou par un sélecteur Colab/Jupyter."""
+    if chemins is not None:
+        if isinstance(chemins, (str, Path)):
+            chemins = [chemins]
+        for chemin in chemins:
+            fichier = Path(chemin).expanduser()
+            try:
+                contenu = fichier.read_bytes()
+            except OSError as erreur:
+                print("Fichier inaccessible :", fichier, "—", erreur)
+                continue
+            _ajouter_images(images, [(fichier.name, contenu)])
+        return
+    try:
+        from google.colab import files
+    except ImportError:
+        selecteur = widgets.FileUpload(accept=".png,.jpg,.jpeg", multiple=True,
+                                      description="Choisir les images")
+
+        def ajouter_selection(changement):
+            selection = changement["new"]
+            if isinstance(selection, dict):  # ipywidgets 7
+                fichiers = [(nom, fichier["content"]) for nom, fichier in selection.items()]
+            else:  # ipywidgets 8
+                fichiers = [(fichier["name"], fichier["content"]) for fichier in selection]
+            _ajouter_images(images, fichiers)
+
+        selecteur.observe(ajouter_selection, names="value")
+        display(selecteur)
+        print("Si le sélecteur ne s’affiche pas, renseignez chemins_images dans le notebook.")
+        return selecteur
+    else:
+        _ajouter_images(images, files.upload().items())
 
 
 def appliquer_rgb(tableau, rouge=1.0, vert=1.0, bleu=1.0):
@@ -279,6 +313,7 @@ def telecharger(archive):
         from google.colab import files
     except ImportError:
         from IPython.display import FileLink
+        print("Archive enregistrée :", Path(archive).resolve())
         display(FileLink(str(archive)))
     else:
         files.download(str(archive))
