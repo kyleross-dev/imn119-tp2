@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import re
 from urllib.request import Request, urlopen
+from urllib.error import URLError
 import zipfile
 
 import ipywidgets as widgets
@@ -38,23 +39,52 @@ def preparer():
     print("Outils du TP2 prêts.")
 
 
-def charger_images():
-    # Images téléchargées depuis leurs liens en ligne.
+def _lire_image(contenu, taille_maximale):
+    """Respecte l’orientation EXIF et compose les transparences sur fond blanc."""
+    with Image.open(io.BytesIO(bytes(contenu))) as im:
+        im = ImageOps.exif_transpose(im).convert("RGBA")
+        fond = Image.new("RGBA", im.size, "white")
+        im = Image.alpha_composite(fond, im).convert("RGB")
+        im.thumbnail((taille_maximale, taille_maximale))
+        return np.asarray(im, dtype=float) / 255.0
+
+
+def charger_images(dossier_cache=".cache-tp2"):
+    """Charge les images d’essai; une copie locale évite de les retélécharger."""
     URL_IMAGES = {
         "Roue chromatique": "https://upload.wikimedia.org/wikipedia/commons/9/98/Color_circle_%28RGB%29.png",
         "Spectre": "https://upload.wikimedia.org/wikipedia/commons/4/44/Linear_visible_spectrum_ciecam02.png",
     }
 
     images = {}
+    cache = Path(dossier_cache) if dossier_cache is not None else None
     for titre, url in URL_IMAGES.items():
+        fichier_cache = cache / url.rsplit("/", 1)[-1] if cache is not None else None
+        if fichier_cache is not None and fichier_cache.is_file():
+            try:
+                images[titre] = _lire_image(fichier_cache.read_bytes(), 700)
+            except (OSError, ValueError):
+                pass  # Un cache incomplet ou endommagé est téléchargé à nouveau.
+            else:
+                print(f"Image chargée : {titre} (copie locale)")
+                continue
         requete = Request(url, headers={"User-Agent": "Mozilla/5.0 IMN119-TP2/1.0"})
-        with urlopen(requete, timeout=30) as reponse:
-            with Image.open(io.BytesIO(reponse.read())) as im:
-                im = im.convert("RGBA")
-                fond = Image.new("RGBA", im.size, "white")
-                im = Image.alpha_composite(fond, im).convert("RGB")
-                im.thumbnail((700, 700))
-                images[titre] = np.asarray(im, dtype=float) / 255.0
+        try:
+            with urlopen(requete, timeout=30) as reponse:
+                contenu = reponse.read()
+            images[titre] = _lire_image(contenu, 700)
+        except (URLError, OSError, ValueError) as erreur:
+            raise RuntimeError(
+                f"Impossible de charger l’image « {titre} ». Vérifiez votre connexion Internet, "
+                "puis relancez cette cellule. Vous pouvez aussi importer une image personnelle "
+                "avec outils.importer_images dans un dictionnaire images = {}."
+            ) from erreur
+        if fichier_cache is not None:
+            try:
+                fichier_cache.parent.mkdir(parents=True, exist_ok=True)
+                fichier_cache.write_bytes(contenu)
+            except OSError:
+                pass  # Le chargement fonctionne aussi dans un dossier non modifiable.
         print(f"Image chargée : {titre}")
     return images
 
@@ -62,10 +92,7 @@ def _ajouter_images(images, fichiers):
     """Charge des couples (nom, octets), communs aux différents environnements."""
     for fichier, contenu in fichiers:
         try:
-            with Image.open(io.BytesIO(bytes(contenu))) as im:
-                im = ImageOps.exif_transpose(im).convert("RGB")
-                im.thumbnail((1000, 1000))
-                images["Personnelle : " + fichier] = np.asarray(im, dtype=float) / 255.0
+            images["Personnelle : " + fichier] = _lire_image(contenu, 1000)
             print("Image ajoutée :", fichier)
         except (OSError, ValueError):
             print("Image non reconnue :", fichier)
@@ -178,6 +205,7 @@ def afficher_comparaison(images, espace, image="Roue chromatique", reglages=None
     for ax in axes.flat:
         ax.axis("off")
     fig.tight_layout(); plt.show()
+    plt.close(fig)
 
 def creer_editeur(images, espace, conversion=None):
     """Crée l’interface avec les widgets standards d’ipywidgets.
@@ -185,6 +213,8 @@ def creer_editeur(images, espace, conversion=None):
     conversion : la fonction de l’étudiant, requise pour CIELAB et HSV.
     Relancez l’appel après avoir redéfini cette fonction dans le notebook.
     """
+    if not images:
+        raise ValueError("Chargez ou importez au moins une image avant de lancer l’éditeur.")
     specifications = {
         "RVB": [("Rouge ×", 0, 2, .01, 1), ("Vert ×", 0, 2, .01, 1), ("Bleu ×", 0, 2, .01, 1)],
         "CIELAB": [("L* +", -50, 50, 1, 0), ("a* +", -50, 50, 1, 0), ("b* +", -50, 50, 1, 0)],
@@ -193,17 +223,40 @@ def creer_editeur(images, espace, conversion=None):
     choix = widgets.Dropdown(options=list(images), description="Image :")
     curseurs = [widgets.FloatSlider(description=t, min=lo, max=hi, step=pas, value=v,
                 continuous_update=False, style={"description_width": "110px"},
-                layout=widgets.Layout(width="420px")) for t, lo, hi, pas, v in specs]
-    def actualiser(image, p, q, r):
+                layout=widgets.Layout(width="420px", max_width="100%")) for t, lo, hi, pas, v in specs]
+    sortie = widgets.Output()
+    reinitialiser = widgets.Button(description="Réinitialiser", icon="undo")
+    mise_a_jour_suspendue = False
+
+    def actualiser(changement=None):
+        if mise_a_jour_suspendue:
+            return
+        with sortie:
+            sortie.clear_output(wait=True)
+            try:
+                afficher_comparaison(images, espace, choix.value,
+                                     tuple(c.value for c in curseurs), conversion)
+            except Exception as erreur:
+                print(type(erreur).__name__ + " : " + str(erreur))
+                print("Vérifiez la fonction, puis relancez la cellule de l’éditeur.")
+
+    def remettre_a_zero(bouton):
+        nonlocal mise_a_jour_suspendue
+        mise_a_jour_suspendue = True
         try:
-            afficher_comparaison(images, espace, image, (p, q, r), conversion)
-        except Exception as erreur:
-            print(type(erreur).__name__ + " : " + str(erreur))
-            print("Vérifiez la fonction, puis relancez la cellule de l’éditeur.")
-    sortie = widgets.interactive_output(actualiser, dict(image=choix,
-                    p=curseurs[0], q=curseurs[1], r=curseurs[2]))
-    display(widgets.VBox([choix, *curseurs, sortie]))
-    return {"image": choix, "curseurs": curseurs}
+            for curseur, specification in zip(curseurs, specs):
+                curseur.value = specification[-1]
+        finally:
+            mise_a_jour_suspendue = False
+        actualiser()
+
+    choix.observe(actualiser, names="value")
+    for curseur in curseurs:
+        curseur.observe(actualiser, names="value")
+    reinitialiser.on_click(remettre_a_zero)
+    display(widgets.VBox([choix, *curseurs, reinitialiser, sortie]))
+    actualiser()
+    return {"image": choix, "curseurs": curseurs, "reinitialiser": reinitialiser}
 
 
 def executer_essai(nom_essai, fonction):
@@ -213,6 +266,9 @@ def executer_essai(nom_essai, fonction):
         print(nom_essai + " : fonction à compléter.")
     except AssertionError as erreur:
         print(nom_essai + " : vérification échouée — " + str(erreur))
+    except (TypeError, ValueError, IndexError, FloatingPointError, ZeroDivisionError) as erreur:
+        print(nom_essai + " : " + type(erreur).__name__ + " — " + str(erreur))
+        print("Vérifiez la forme du tableau, les types numériques et les divisions, puis relancez les essais.")
     else:
         print(nom_essai + " : essais fournis réussis (vérification non exhaustive).")
 
@@ -257,13 +313,18 @@ def tester_hsv(conversion):
     executer_essai('HSV', lambda: _essai_hsv(conversion))
 
 def creer_remise(nom, cip, reponses):
-    if not nom.strip() or not re.fullmatch(r"[a-z0-9]{1,40}", cip):
+    if (not isinstance(nom, str) or not nom.strip() or not isinstance(cip, str)
+            or not re.fullmatch(r"[a-z0-9]{1,40}", cip)):
         print("Complétez votre nom et votre CIP en minuscules, sans espace, dans REPONSE_IDENTITE.")
         return None
 
     marqueurs = tuple(f"REPONSE_Q{i:02d}" for i in range(1, 8))
     sources = {}
-    for source in get_ipython().history_manager.input_hist_raw:
+    shell = get_ipython()
+    if shell is None or not hasattr(shell, "history_manager"):
+        print("Créez la remise depuis le notebook après avoir exécuté les cellules de réponse.")
+        return None
+    for source in shell.history_manager.input_hist_raw:
         premiere = source.strip().splitlines()[0] if source.strip() else ""
         for marqueur in marqueurs:
             if premiere == "# " + marqueur:
@@ -292,8 +353,14 @@ def creer_remise(nom, cip, reponses):
     entete = "import numpy as np\n\n"
     toutes_reponses = entete + "\n\n".join(sources[m] for m in marqueurs)
     conversions = entete + "\n\n".join(sources[m] for m in ("REPONSE_Q02", "REPONSE_Q03"))
+    try:
+        texte_json = json.dumps(donnees, ensure_ascii=False, indent=2, allow_nan=False)
+    except (TypeError, ValueError):
+        print("Archive non créée : une réponse contient un type non exportable ou une valeur NaN/infinie.")
+        print("Utilisez des nombres finis, des booléens, des textes, des listes ou None pour une réponse manquante.")
+        return None
     contenu = {
-        "reponses.json": json.dumps(donnees, ensure_ascii=False, indent=2, allow_nan=False),
+        "reponses.json": texte_json,
         "conversions.py": conversions,
         "reponses.py": toutes_reponses,
     }
@@ -307,7 +374,7 @@ def creer_remise(nom, cip, reponses):
 
 def telecharger(archive):
     if archive is None:
-        print("Complétez votre identification et exécutez les sept réponses, puis relancez l’export.")
+        print("Corrigez les messages affichés lors de la création de la remise, puis relancez l’export.")
         return
     try:
         from google.colab import files

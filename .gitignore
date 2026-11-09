@@ -5,3 +5,5 @@ __pycache__/
 build/
 dist/
 .ipynb_checkpoints/
+.cache-tp2/
+TP2_*.zip
